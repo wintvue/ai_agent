@@ -52,7 +52,15 @@ export OPENAI_API_KEY="your-api-key"
 Or add it to your Python environment using os.environ if needed.
 
 
-### 3. Run the Script
+### 3. Run the App
+
+Run the app in the chat UI:
+
+```bash
+streamlit run app.py
+```
+
+If you want to run the app in the terminal:
 
 ```bash
 python main.py

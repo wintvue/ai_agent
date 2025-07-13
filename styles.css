@@ -1,0 +1,37 @@
+html, body, [class*="stApp"], [data-testid="stAppViewContainer"] {
+    background: radial-gradient(circle at 50% 0%, #6a11cb 0%, #2575fc 100%);
+    color: #fff;
+}
+
+/* Chat container */
+.chat-bubble {
+    padding: 0.75rem 1rem;
+    border-radius: 1rem;
+    margin-bottom: 0.5rem;
+    max-width: 80%;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    font-size: 1rem;
+    line-height: 1.4;
+}
+
+.user {
+    background: rgba(255, 255, 255, 0.2);
+    margin-left: auto;
+}
+
+.assistant {
+    background: rgba(0, 0, 0, 0.2);
+    border-left: 4px solid #00e6e6;
+}
+
+/* Input tweaks */
+textarea, input[type="text"] {
+    background: rgba(255,255,255,0.15) !important;
+    color: #fff !important;
+    border: 1px solid rgba(255,255,255,0.3) !important;
+}
+
+/* Remove Streamlit footer */
+footer {visibility: hidden;}
