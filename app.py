@@ -47,7 +47,7 @@ def display_message(message: dict):
 if not st.session_state.interview_started:
     with st.spinner("Starting interview..."):
         # Get the first question from the interview agent
-        first_question = st.session_state.interview_agent.get_response([], "")
+        first_question = st.session_state.interview_agent.get_response([])
         st.session_state.messages.append({"role": "assistant", "content": first_question})
         st.session_state.interview_started = True
 
@@ -67,7 +67,7 @@ if user_prompt:
 
     with st.spinner("Interviewer is thinking…"):
         # Get response from interview agent
-        assistant_reply = st.session_state.interview_agent.get_response(st.session_state.messages[:-1], user_prompt)
+        assistant_reply = st.session_state.interview_agent.get_response(st.session_state.messages[:])
 
     st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
     display_message(st.session_state.messages[-1])

@@ -30,59 +30,98 @@ class InterviewAgent:
     def __init__(
         self,
         questions: List[str] = None,
-        max_followups: int = 5,
-        model_name: str = "gpt-4o-mini",
-        temperature: float = 0.3
+        max_followups_per_question: int = 2,
+        model_name: str = "gpt-4.1",
+        temperature: float = 0.7
     ) -> None:
-        if max_followups < 0:
-            raise ValueError("max_followups must be non-negative")
+        if max_followups_per_question < 0:
+            raise ValueError("max_followups_per_question must be non-negative")
 
         self.questions = questions or QUESTIONS
-        self.max_followups = max_followups
+        self.max_followups_per_question = max_followups_per_question
         self.llm = ChatOpenAI(model_name=model_name, temperature=temperature)
-        self.followups_remaining = max_followups
 
         # runtime state
-        self.memory = ConversationBufferMemory(return_messages=True)
         self.q_index = 0          
-        self.need_followup = False  
+        self.current_question_followups = 0  # Track follow-ups for current question
         self.is_started = False
 
-        # System prompt for follow-up questions
-        self.followup_system_prompt = (
-            "You are an experienced interviewer conducting a behavioral interview. "
-            "Based on the candidate's response, ask ONE specific follow-up question that:\n"
-            "1. Probes for concrete examples or details\n"
-            "2. Explores the candidate's decision-making process\n"
-            "3. Uncovers their role and impact in the situation\n"
-            "Keep it conversational and under 25 words."
+        # System prompt for evaluating response quality
+        self.evaluation_system_prompt = (
+            "You are an experienced interviewer evaluating a candidate's response. "
+            "Analyze the response and determine if it needs a follow-up question. "
+            "A follow-up is needed if the response:\n"
+            "1. Lacks specific examples or concrete details\n"
+            "2. Is too brief or vague (under 30 words)\n"
+            "3. Doesn't explain the candidate's role or actions clearly\n"
+            "4. Missing the outcome or impact of their actions\n"
+            "5. Doesn't address the STAR method (Situation, Task, Action, Result)\n\n"
+            "Respond with only 'YES' if a follow-up is needed, or 'NO' if the response is adequate."
         )
         
-        logger.info(f"InterviewAgent initialized with {len(self.questions)} questions, max_followups={max_followups}")
+        # System prompt for generating follow-up questions
+        self.followup_generation_prompt = (
+            "You are an experienced interviewer. Generate ONE specific follow-up question "
+            "based on what's missing from the candidate's response. Focus on:\n"
+            "1. Getting specific examples if response is vague\n"
+            "2. Understanding their role and actions if unclear\n"
+            "3. Learning about results/outcomes if missing\n"
+            "4. Probing decision-making process if needed\n"
+            "Keep it conversational and under 25 words. Be direct and specific."
+        )
+        
+        logger.info(f"InterviewAgent initialized with {len(self.questions)} questions, max_followups_per_question={max_followups_per_question}")
 
     def _next_prepared_question(self) -> Optional[str]:
         if self.q_index < len(self.questions):
             q = self.questions[self.q_index]
             logger.info(f"Retrieving prepared question {self.q_index + 1}/{len(self.questions)}: '{q}'")
             self.q_index += 1
+            self.current_question_followups = 0  # Reset follow-up counter for new question
             return q
         logger.info("No more prepared questions available")
         return None
 
-    def _generate_followup_direct(self, conversation_history: List[dict]) -> str:
-        logger.info(f"Generating follow-up question using direct LLM call (remaining: {self.followups_remaining})")
+    def _should_ask_followup(self, candidate_response: str) -> bool:
+        """Evaluate if a follow-up question is needed based on response quality."""
+        logger.info(f"Evaluating response quality for follow-up decision")
+        
+        # Basic checks first
+        if len(candidate_response.strip()) < 20:
+            logger.info("Response too short, follow-up needed")
+            return True
+            
+        try:
+            messages = [
+                SystemMessage(content=self.evaluation_system_prompt),
+                HumanMessage(content=f"Candidate's response: {candidate_response}")
+            ]
+            
+            response = self.llm(messages)
+            decision = response.content.strip().upper()
+            
+            logger.info(f"LLM evaluation decision: {decision}")
+            return decision == "YES"
+            
+        except Exception as e:
+            logger.error(f"Error in response evaluation: {e}")
+            # Default to asking follow-up if evaluation fails
+            return True
+
+    def _generate_followup_question(self, conversation_history: List[dict]) -> str:
+        """Generate a specific follow-up question based on conversation history."""
+        logger.info("Generating follow-up question")
         
         # Convert conversation history to a readable format
         history_text = ""
-        for msg in conversation_history:
+        for msg in conversation_history[-4:]:  # Only use last 4 messages for context
             role = "Interviewer" if msg["role"] == "assistant" else "Candidate"
             history_text += f"{role}: {msg['content']}\n"
         
         try:
-            # Direct LLM call with messages
             messages = [
-                SystemMessage(content=self.followup_system_prompt),
-                HumanMessage(content=f"Interview conversation:\n{history_text}\n\nWhat's your follow-up question?")
+                SystemMessage(content=self.followup_generation_prompt),
+                HumanMessage(content=f"Recent conversation:\n{history_text}\n\nWhat follow-up question should I ask?")
             ]
             
             response = self.llm(messages)
@@ -93,63 +132,58 @@ class InterviewAgent:
                 return followup
             else:
                 logger.warning("LLM returned empty follow-up, using fallback")
-                return "Could you elaborate further on that?"
+                return "Can you give me a specific example?"
                 
         except Exception as e:
             logger.error(f"Error generating follow-up: {e}")
-            return "Could you tell me more about that?"
+            return "Could you elaborate on that with more details?"
 
-    def _generate_followup(self, conversation_history: List[dict]) -> str:
-        """Use the LLM to craft one follow-up question based on app's chat history."""
-        # Using direct approach by default (most recommended)
-        return self._generate_followup_direct(conversation_history)
+    def _generate_followup(self, conversation_history: List[dict]) -> Optional[str]:
+        """Use a two-step process to decide and generate follow-up questions."""
+            
+        last_user_msg = conversation_history[-1]['content']
+                
+        if self._should_ask_followup(last_user_msg):
+            return self._generate_followup_question(conversation_history)
+        else:
+            logger.info("Response evaluation determined no follow-up needed")
+            return None
 
-    def agent_turn(self, user_msg: Optional[str] = None, conversation_history: List[dict] = None) -> str:
+    def agent_turn(self, conversation_history: List[dict] = None) -> str:
         """Advance the interview by one line.
 
         Args:
-            user_msg: Candidate's response to the *previous* interviewer line.
-                       Use ``None`` on the very first call to start the session.
             conversation_history: Full conversation history from the app for follow-up generation.
         Returns:
             The next interviewer line.
         """
-        logger.info(f"Agent turn started - need_followup: {self.need_followup}, followups_remaining: {self.followups_remaining}")
+        logger.info(f"Agent turn started - current_question_followups: {self.current_question_followups}, max_per_question: {self.max_followups_per_question}")
         
-        if user_msg is not None:
-            self.memory.chat_memory.add_user_message(user_msg)
 
-        if self.need_followup and self.followups_remaining > 0:
-            logger.info("Processing follow-up question")
-            # Use conversation history from app if available, otherwise fall back to internal memory
-            if conversation_history:
-                follow = self._generate_followup(conversation_history)
+        # Check if we should consider a follow-up (only if we have remaining follow-ups for current question)
+        if conversation_history and self.current_question_followups < self.max_followups_per_question:
+            logger.info("Checking if follow-up is needed")
+            # Use conversation history from app if available
+            follow = self._generate_followup(conversation_history)
+            if follow:  # LLM decided to ask a follow-up
+                self.current_question_followups += 1
+                logger.info(f"Follow-up question generated: '{follow}' (current question followups: {self.current_question_followups})")
+                return follow
             else:
-                # Convert internal memory to expected format
-                internal_history = self.memory.load_memory_variables({})["history"]
-                follow = f"Could you elaborate further on that? (Internal: {internal_history})"
-                logger.warning("No conversation history provided, using default follow-up")
-            
-            self.memory.chat_memory.add_ai_message(follow)
-            self.need_followup = False
-            self.followups_remaining -= 1
-            logger.info(f"Follow-up question generated: '{follow}' (remaining followups: {self.followups_remaining})")
-            return follow
+                logger.info("LLM decided no follow-up needed, moving to next prepared question")
 
+        # If no follow-up needed or max follow-ups reached, move to next prepared question
         prepared = self._next_prepared_question()
         if prepared is not None:
-            self.memory.chat_memory.add_ai_message(prepared)
-            self.need_followup = self.followups_remaining > 0
-            logger.info(f"Prepared question asked: '{prepared}' (will need followup: {self.need_followup})")
+            logger.info(f"Prepared question asked: '{prepared}'")
             return prepared
 
         # If no more questions, close the interview
         closing = "Thank you for your time! We'll be in touch."
-        self.memory.chat_memory.add_ai_message(closing)
         logger.info(f"Interview completed with closing message: '{closing}'")
         return closing
 
-    def get_response(self, conversation_history: List[dict], user_prompt: str) -> str:
+    def get_response(self, conversation_history: List[dict]) -> str:
         """
         Get response from the interview agent.
         
@@ -168,11 +202,11 @@ class InterviewAgent:
             return self.agent_turn()
         
         # Continue the interview with user input and conversation history
-        return self.agent_turn(user_prompt, conversation_history)
+        return self.agent_turn(conversation_history)
 
 
 if __name__ == "__main__":
-    interview = InterviewAgent(max_followups=3)
+    interview = InterviewAgent(max_followups_per_question=2)
 
     print("Agent:", interview.agent_turn())  
     conversation_history = []
